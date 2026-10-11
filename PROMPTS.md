@@ -460,19 +460,6 @@ Create or update `ARCHITECTURE.md` with:
 
 Distinguish implemented features from proposed or unverified features. Never include credentials, tokens, personal information or other secrets.
 
-### Prompt history
-
-Create or update `PROMPT_LOG.md` with all development prompts in their original chronological order.
-
-Preserve the original user prompts verbatim, including typos, and label agent questions and my answers separately. Add a second section containing the improved prompts, clearly marked as rewritten versions.
-
-For each entry, record the actual outcome only when it can be verified from the repository, terminal history or conversation. Do not invent missing prompts or test results.
-
-Include a final summary of the most important changes made through AI-assisted development.
-
-Verify that both files exist and are readable after writing them.
-
----
 
 ## Prompt 17: Fix the calendar that displays only a few days
 
@@ -510,3 +497,27 @@ Diagnose and fix the underlying problem in the existing Room Booker application.
 * Run the existing application tests and add regression tests for the discovered issue.
 
 Implement the smallest reliable fix, explain the root cause and list the tests that passed. Inspect the live application after deployment if access is available; otherwise, state clearly that live verification remains outstanding.
+
+## Prompt 17: Commit this entire code to github public repo name: meeting-room-booking-aws username: dileepnsp. create pull request and setup git locally and commit the code.
+
+## Prompt 18: Compose an email that covers below 
+
+Submission checklist
+1. Public working URL
+2. One-page AI Collaboration Snapshot, max approximately 500 words
+3. Optional: full AI transcript link
+4. Optional: update/delete functionality
+
+### Prompt history
+
+Create or update `PROMPTS.md` with all development prompts in their original chronological order.
+
+Preserve the original user prompts verbatim, including typos, and label agent questions and my answers separately. Add a second section containing the improved prompts, clearly marked as rewritten versions.
+
+For each entry, record the actual outcome only when it can be verified from the repository, terminal history or conversation. Do not invent missing prompts or test results.
+
+Include a final summary of the most important changes made through AI-assisted development.
+
+Verify that both files exist and are readable after writing them.
+
+---
