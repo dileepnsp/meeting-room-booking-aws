@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Room Booker · Prudential</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/scene-day.svg" as="image" media="(prefers-color-scheme: light)">
+  <link rel="preload" href="assets/scene-night.svg" as="image" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ================= Welcome / sign in ================= -->
+  <section id="authView" class="auth scene" hidden>
+    <div class="auth-card glass">
+      <div class="brand brand-lg" data-brand></div>
+      <h1 class="auth-title">Book your meeting room</h1>
+      <p class="auth-sub">Rooms with a view, ready when you are.</p>
+
+      <form id="employeeForm" class="auth-form" novalidate>
+        <div class="field-group">
+          <label class="field"><span class="sr-only">Work email</span>
+            <input type="email" name="email" id="emailInput" autocomplete="email" inputmode="email"
+                   required placeholder="name@prudential.com">
+          </label>
+        </div>
+        <p class="hint" id="emailHint">Use your @prudential.com email. No password needed.</p>
+        <button class="btn btn-primary btn-block" type="submit">Continue</button>
+      </form>
+
+      <div class="divider" id="authDivider"><span>or</span></div>
+
+      <button type="button" class="btn btn-glass btn-block" id="guestToggle">Continue as guest</button>
+      <form id="guestForm" class="auth-form" novalidate hidden>
+        <div class="field-group">
+          <label class="field"><span class="sr-only">Your name</span>
+            <input name="name" id="guestName" autocomplete="name" maxlength="40" required placeholder="Your name">
+          </label>
+        </div>
+        <p class="hint">Guests can hold 1 upcoming booking, kept on this device.</p>
+        <button class="btn btn-primary btn-block" type="submit">Continue as guest</button>
+        <button class="btn-link" type="button" id="guestBack">Back</button>
+      </form>
+
+      <p class="form-error" id="authError" role="alert" hidden></p>
+    </div>
+    <p class="fineprint on-scene">Internal demo · not an official Prudential system</p>
+  </section>
+
+  <!-- ================= App ================= -->
+  <div id="appView" hidden>
+    <header class="navbar glass">
+      <div class="navbar-inner">
+        <div class="brand" data-brand></div>
+        <span class="navbar-title">Room Booker</span>
+        <div class="account">
+          <button type="button" class="avatar" id="avatarBtn" aria-haspopup="menu" aria-expanded="false"></button>
+          <div class="menu glass" id="accountMenu" role="menu" hidden>
+            <div class="menu-head">
+              <strong id="menuName"></strong>
+              <span id="menuEmail"></span>
+            </div>
+            <button type="button" role="menuitem" class="menu-item danger" id="signOutBtn">Sign out</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="hero scene">
+        <div class="hero-text">
+          <p class="eyebrow" id="greeting">Good morning</p>
+          <h1 class="large-title">Book a room</h1>
+          <span class="badge" id="kindBadge"></span>
+        </div>
+      </section>
+
+      <div class="top-grid">
+        <section class="card needs" aria-labelledby="needsTitle">
+          <h2 id="needsTitle">Who's coming?</h2>
+          <div class="needs-row">
+            <span class="needs-label">People</span>
+            <div class="stepper" role="group" aria-label="Number of people">
+              <button type="button" id="peopleMinus" aria-label="Fewer people">−</button>
+              <output id="peopleCount" aria-live="polite">4</output>
+              <button type="button" id="peoplePlus" aria-label="More people">+</button>
+            </div>
+          </div>
+          <div class="quick" id="quickPeople"></div>
+          <label class="needs-row switch-row">
+            <span class="needs-label">Video / TV needed</span>
+            <input type="checkbox" class="switch" id="avToggle" role="switch">
+          </label>
+          <p class="secondary small" id="matchText"></p>
+        </section>
+
+        <section class="card quota" aria-labelledby="quotaTitle">
+          <div class="quota-top">
+            <div class="ring-wrap">
+              <svg class="ring" viewBox="0 0 44 44" aria-hidden="true">
+                <circle class="ring-track" cx="22" cy="22" r="18"/>
+                <circle class="ring-fill" id="ringFill" cx="22" cy="22" r="18"/>
+              </svg>
+              <span class="ring-label" id="ringLabel">0/3</span>
+            </div>
+            <div>
+              <h2 id="quotaTitle">My bookings</h2>
+              <p class="secondary small" id="quotaText"></p>
+            </div>
+          </div>
+          <div class="segmented small-seg" role="tablist" id="myTabs" data-active="upcoming">
+            <button type="button" role="tab" data-tab="upcoming" aria-selected="true">Upcoming</button>
+            <button type="button" role="tab" data-tab="past" aria-selected="false">Past</button>
+            <span class="segmented-thumb" aria-hidden="true"></span>
+          </div>
+          <ul class="mini-list" id="myList"></ul>
+        </section>
+      </div>
+
+      <section class="day-section">
+        <div class="section-head">
+          <h2 id="dayTitle">Today</h2>
+          <div class="head-actions">
+            <button type="button" class="btn-pill" id="todayBtn">Today</button>
+            <button type="button" class="btn-pill btn-icon" id="calBtn" aria-label="Open calendar" aria-haspopup="dialog">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <rect x="3.5" y="5" width="17" height="15.5" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+              <span>Calendar</span>
+            </button>
+          </div>
+        </div>
+        <div class="day-strip" id="dayStrip" role="listbox" aria-label="Choose a day"></div>
+      </section>
+
+      <section class="rooms" id="rooms" aria-live="polite"></section>
+      <div class="legend">
+        <span class="l-free">Available</span><span class="l-mine">Yours</span><span class="l-taken">Booked</span>
+      </div>
+      <p class="hidden-note" id="hiddenNote" hidden></p>
+
+      <section class="everyone">
+        <div class="section-head"><h2>All upcoming bookings</h2></div>
+        <div class="inset-list" id="everyoneList"></div>
+      </section>
+
+      <p class="fineprint">Internal demo · not an official Prudential system</p>
+    </main>
+  </div>
+
+  <!-- ================= Sheet ================= -->
+  <dialog id="sheet" class="sheet" aria-labelledby="sheetTitle">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <form id="sheetForm" novalidate>
+      <header class="sheet-head">
+        <button type="button" class="btn-text" data-close>Close</button>
+        <h3 id="sheetTitle">Room</h3>
+        <span class="sheet-spacer"></span>
+      </header>
+      <p class="sheet-when" id="sheetWhen"></p>
+      <div class="sheet-room" id="sheetRoom"></div>
+      <div id="sheetEditable">
+        <div class="field-group">
+          <label class="field"><span>Meeting</span>
+            <input name="title" id="titleInput" maxlength="100" required placeholder="e.g. Quarterly review" autocomplete="off">
+          </label>
+          <div class="field"><span>People</span><strong id="sheetPeople" class="field-value"></strong></div>
+        </div>
+        <p class="hint" id="sheetHint"></p>
+        <p class="form-error" id="sheetError" role="alert" hidden></p>
+        <button class="btn btn-primary btn-block" type="submit" id="sheetSubmit">Book</button>
+        <button class="btn btn-destructive btn-block" type="button" id="sheetCancel" hidden>Cancel booking</button>
+      </div>
+      <div id="sheetReadonly" hidden>
+        <div class="inset-list">
+          <div class="row"><span>Meeting</span><strong id="roTitle"></strong></div>
+          <div class="row"><span>Booked by</span><strong id="roName"></strong></div>
+          <div class="row"><span>People</span><strong id="roPeople"></strong></div>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ================= Month calendar ================= -->
+  <dialog id="calSheet" class="sheet cal-sheet" aria-labelledby="calTitle">
+    <div class="sheet-grabber" aria-hidden="true"></div>
+    <header class="sheet-head">
+      <button type="button" class="btn-text" id="calClose">Close</button>
+      <h3>Choose a day</h3>
+      <span class="sheet-spacer"></span>
+    </header>
+    <div class="cal-nav">
+      <button type="button" class="cal-arrow" id="calPrev" aria-label="Previous month">‹</button>
+      <strong id="calTitle">October 2026</strong>
+      <button type="button" class="cal-arrow" id="calNext" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-grid cal-dow" id="calDow" aria-hidden="true"></div>
+    <div class="cal-grid" id="calDays" role="grid"></div>
+    <p class="cal-legend"><span class="cal-dot"></span> You have a booking · bookings open up to <span id="calWindow">60</span> days ahead</p>
+  </dialog>
+
+  <div id="toast" class="toast glass" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

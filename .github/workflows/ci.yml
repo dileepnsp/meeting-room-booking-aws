@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"     # matches the Lambda runtime
+      - run: pip install -r requirements-dev.txt
+      - name: Unit tests (moto-mocked DynamoDB)
+        run: pytest -q tests
+      - name: Lint CloudFormation
+        run: cfn-lint infra/template.yaml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Frontend syntax check
+        run: node --check frontend/app.js

@@ -1,0 +1,6 @@
+boto3>=1.40
+botocore[crt]>=1.40
+-r backend/requirements.txt
+moto[dynamodb]>=5.0
+pytest>=8.0
+cfn-lint>=1.0

@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Build output (deploy.py builds in the system temp dir; this catches older local builds)
+.build/
+
+# Local AWS / editor files
+.aws/
+.env
+*.zip
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

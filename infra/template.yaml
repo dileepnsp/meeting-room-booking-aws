@@ -1,0 +1,392 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Room Booker - meeting-room booking app.
+  CloudFront (HTTPS, security headers) -> S3 static website (frontend) and
+  CloudFront -> Lambda Function URL via Origin Access Control (API) -> DynamoDB.
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Description: Private bucket holding the Lambda deployment package (managed by deploy.py).
+  CodeKey:
+    Type: String
+    Description: S3 key of the Lambda zip (content-hashed so every code change redeploys).
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: >
+      Shared secret CloudFront sends to the S3 website origin as a Referer header.
+      The bucket policy only serves requests carrying it, so S3 can't be reached around CloudFront.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional email that receives alarm notifications (confirm the SNS subscription email).
+  ReservedConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >
+      Hard cap on concurrent Lambda executions (cost/abuse ceiling). 0 = not set; new accounts
+      with a 10-execution account limit cannot reserve any.
+  WriteRateLimit:
+    Type: Number
+    Default: 20
+    Description: Max create/edit/cancel requests per employee per 10-minute window.
+  SessionSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: HMAC key that signs session tokens (generated once by deploy.py, never printed).
+  EmployeeEmailDomain:
+    Type: String
+    Default: prudential.com
+    AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
+    Description: Only addresses at exactly this domain can start an employee session.
+  MaxActivePerEmployee:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: Max upcoming bookings one employee may hold at a time.
+  MaxActivePerGuest:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    Description: Max upcoming bookings one guest may hold (0 = guests can only browse).
+  GuestSessionsPerHour:
+    Type: Number
+    Default: 5
+    Description: Max new guest sessions per network (IP) per hour, so a cleared browser isn't a fresh quota.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
+
+Resources:
+  # ---------------------------------------------------------------- data
+  BookingsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain          # never lose bookings because a stack was deleted
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AWS::StackName}-bookings"
+      BillingMode: PAY_PER_REQUEST
+      DeletionProtectionEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      # Encryption at rest uses the default AWS-owned key. (SSEEnabled: true would switch to the
+      # aws/dynamodb managed KMS key, which doesn't exist yet in a brand-new account and failed the
+      # first deploy; switch to a customer-managed key if per-key audit/rotation is required.)
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: upcoming          # "all upcoming bookings" without a table scan
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      Tags:
+        - { Key: app, Value: room-booker }
+
+  # ---------------------------------------------------------------- API
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-api"
+      RetentionInDays: 30
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Room Booker API - item access to one table + its index, own log group, X-Ray.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId }
+      Policies:
+        - PolicyName: least-privilege
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: BookingItems
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource: !GetAtt BookingsTable.Arn
+              - Sid: UpcomingIndex
+                Effect: Allow
+                Action: dynamodb:Query
+                Resource: !Sub "${BookingsTable.Arn}/index/upcoming"
+              - Sid: OwnLogs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${ApiLogGroup.Arn}"
+              - Sid: Tracing          # X-Ray write APIs do not support resource-level permissions
+                Effect: Allow
+                Action: [xray:PutTraceSegments, xray:PutTelemetryRecords]
+                Resource: "*"
+      Tags:
+        - { Key: app, Value: room-booker }
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-api"
+      Description: Room Booker API
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ApiRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      MemorySize: 256
+      Timeout: 10
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]
+      TracingConfig: { Mode: Active }
+      LoggingConfig:
+        LogGroup: !Ref ApiLogGroup
+        LogFormat: JSON
+        ApplicationLogLevel: INFO
+        SystemLogLevel: WARN
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref BookingsTable
+          WRITE_RATE_LIMIT: !Ref WriteRateLimit
+          SESSION_SECRET: !Ref SessionSecret
+          EMPLOYEE_EMAIL_DOMAIN: !Ref EmployeeEmailDomain
+          MAX_ACTIVE_PER_EMPLOYEE: !Ref MaxActivePerEmployee
+          MAX_ACTIVE_PER_GUEST: !Ref MaxActivePerGuest
+          GUEST_SESSIONS_PER_HOUR: !Ref GuestSessionsPerHour
+      Tags:
+        - { Key: app, Value: room-booker }
+
+  # IAM-authenticated: anonymous callers get 403. Only CloudFront (via OAC) can invoke it.
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref ApiFunction
+      AuthType: AWS_IAM
+
+  CloudFrontInvokeUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+      FunctionUrlAuthType: AWS_IAM
+
+  CloudFrontInvokeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ---------------------------------------------------------------- frontend
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]   # ACLs disabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: false     # website endpoints need a bucket policy...
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration: { Status: Enabled }          # roll back a bad frontend upload
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      Tags:
+        - { Key: app, Value: room-booker }
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadOnlyViaCloudFront   # ...but it only answers requests carrying CloudFront's secret
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals: { "aws:Referer": !Ref OriginSecret }
+
+  ApiOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-api-oac"
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security-headers"
+        SecurityHeadersConfig:
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 63072000, IncludeSubdomains: true, Preload: false, Override: true }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: >-
+              default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+              font-src 'self'; connect-src 'self';
+              base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+        CustomHeadersConfig:
+          Items:
+            - { Header: Permissions-Policy, Value: "camera=(), microphone=(), geolocation=()", Override: true }
+        RemoveHeadersConfig:
+          Items:
+            - { Header: Server }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: Room Booker
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        DefaultRootObject: index.html
+        Origins:
+          - Id: site
+            DomainName: !Select [1, !Split ["://", !GetAtt SiteBucket.WebsiteURL]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only        # S3 website endpoints only speak HTTP
+            OriginCustomHeaders:
+              - { HeaderName: Referer, HeaderValue: !Ref OriginSecret }
+          - Id: api
+            DomainName: !Select [2, !Split ["/", !GetAtt ApiFunctionUrl.FunctionUrl]]
+            OriginAccessControlId: !GetAtt ApiOriginAccessControl.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            Compress: true
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad        # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
+      Tags:
+        - { Key: app, Value: room-booker }
+
+  # ---------------------------------------------------------------- observability
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      # No KmsMasterKeyId: CloudWatch alarms cannot publish to a topic encrypted with the
+      # AWS-managed aws/sns key (it would need a customer-managed key granting cloudwatch access).
+      Subscription: !If
+        - HasAlertEmail
+        - [{ Protocol: email, Endpoint: !Ref AlertEmail }]
+        - !Ref AWS::NoValue
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Room Booker API raised unhandled errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref ApiFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  ApiThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Room Booker API is being throttled (concurrency exhausted)
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions: [{ Name: FunctionName, Value: !Ref ApiFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  Edge5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: More than 5% of requests at CloudFront return 5xx
+      Namespace: AWS/CloudFront
+      MetricName: 5xxErrorRate
+      Dimensions:
+        - { Name: DistributionId, Value: !Ref Distribution }
+        - { Name: Region, Value: Global }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  AppUrl:
+    Value: !Sub "https://${Distribution.DomainName}"
+  DistributionId:
+    Value: !Ref Distribution
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  TableName:
+    Value: !Ref BookingsTable
+  FunctionName:
+    Value: !Ref ApiFunction
+  FunctionUrl:
+    Description: IAM-protected; direct calls return 403 by design.
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  DirectS3WebsiteUrl:
+    Description: Returns 403 by design (only CloudFront holds the origin secret).
+    Value: !GetAtt SiteBucket.WebsiteURL
